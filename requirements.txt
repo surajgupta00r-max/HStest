@@ -1,0 +1,5 @@
+pyrogram==2.0.106
+tgcrypto>=1.2.5
+yt-dlp>=2025.9.26
+pymongo>=4.8.0
+python-dotenv>=1.0.1
