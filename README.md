@@ -1,68 +1,94 @@
-# Hotstar + SonyLIV Telegram Bot (starter build)
+# Hotstar + SonyLIV Telegram Bot
 
-This ZIP contains a modular Telegram bot starter based on the supplied `hs2.py` CLI and implementation plan. It adds a Telegram command surface and isolated task workspaces rather than running the original interactive CLI inside a handler.
+A source-specific Telegram bot built around yt-dlp and Pyrogram. It is not a generic mirror/leech bot. The original `hs2.py` CLI is used as a source of media-processing behavior, but is not imported directly because it includes terminal prompts, global paths, and legacy CLI lifecycle behavior.
 
-## Implemented in this build
+## Design boundary
+
+This project borrows general task UX and media-workflow ideas from the supplied WZML-X reference; it does not import WZML-X modules or turn this project into a generic mirror/leech bot. The source remains focused on authorized Hotstar and SonyLIV workflows.
+
+## What is implemented
+
+### Commands and task UX
 
 - `/start`, `/help`, `/about`
-- `/info URL` — analyze a direct URL without downloading
-- `/download URL` and `/dl URL` — analyze and present inline choices for quality, audio-language preference when yt-dlp exposes it, and subtitle language
-- `/status` and `/cancel TASK_ID`
-- `/settings` and `/mysettings`
-- Strict HTTPS host allowlisting for configured Hotstar/SonyLIV domains
-- SQLite persistence by default, with MongoDB persistence when `MONGO_URI` is configured
-- Per-user active task limits, a bounded worker count, queueing, task-state updates, and real subprocess termination for active yt-dlp downloads
-- Task-specific working directories; successful output is cleaned up only after Telegram confirms the upload; failed output is retained by default
-- Telegram uploads through Pyrogram/MTProto; no local `telegram-bot-api` binary is required
-- Startup recovery marks interrupted tasks failed rather than pretending they resumed
+- `/info URL` — inspect one direct media URL without downloading
+- `/download URL`, `/dl URL` — analyze media, choose quality/audio/subtitles, then enqueue
+- `/status` — paginated task cards with All/Active/Failed/Completed filters, refresh, stage details, progress, speed/ETA when available, queue position, and inline cancellation
+- `/cancel TASK_ID` — cancel a task owned by the requesting user
+- `/settings`, `/mysettings` — categorized Video, Audio, Subtitles, Metadata & Naming, Thumbnail, Upload, and Cookies / Session settings
+- `/setthumbnail HTTPS_URL`, `/clearthumbnail` — set or clear a per-user custom poster URL
 
-## Important limitations
+### Queue and reliability
 
-This is a **starter/MVP, not a claim that every source link works**. Hotstar and SonyLIV support depends on the installed yt-dlp version and its native extractors for the exact item. Live provider extraction was not possible in the build environment. The two provider classes share yt-dlp's normal extractor mechanism; SonyLIV has not been independently verified end-to-end.
+- Separate download and upload queues and independently configurable worker counts (`MAX_DOWNLOAD_WORKERS`, `MAX_UPLOAD_WORKERS`). `MAX_WORKERS` remains a backwards-compatible default for download workers.
+- Task IDs, per-user task limits, queue positions, durable SQLite task/user state, optional MongoDB persistence, restart marking for unfinished tasks, and owner checks on callbacks.
+- Task-specific workspaces. Successful workspaces are removed only after Telegram confirms upload; failed output is retained by default.
+- yt-dlp download progress and Pyrogram upload progress are throttled before updating Telegram messages. Repeated callback presses that do not change the message are handled without a dispatcher traceback.
+- URL validation requires HTTPS and matches configured provider hostnames or their proper subdomains. Custom thumbnail URLs are restricted to public HTTPS destinations, including redirect checks.
 
-This bot does not bypass DRM, paywalls, or access controls. Use only media and accounts you are authorized to access. Some URLs may fail because the extractor does not support them or the item is DRM-protected.
+### Media processing restored from `hs2.py`
 
-The following features from the original CLI / plan are **not yet wired into this bot**: TMDB metadata/date enrichment, the original filename-normalization engine, MKV cover embedding, Storage.to/Gofile/Buzzheavier uploads and cloud fallback, detailed FFprobe/MediaInfo captions, and durable resume of interrupted downloads. The existing `hs2.py` is not imported as a module because its main pipeline depends on terminal prompts and global filesystem behavior.
+- FFprobe-based video/audio/subtitle probing, with optional MediaInfo supplements.
+- Correct parsing of Matroska `BPS` tags as bits per second; unknown audio language remains `Unknown` rather than being guessed as Hindi.
+- Optional TMDB title/year/genre/episode-air-date enrichment via `TMDB_API_KEY`, with source metadata fallback when missing or unavailable.
+- Separate pre-normalization local filename, physical saved filename, and Smart Caption filename. The pre-normalization local filename is the filename yt-dlp wrote before this bot renamed the downloaded media; it is not guaranteed to match a provider's internal original filename.
+- Smart Caption V1 (detailed per-audio-track metadata) and V2 (compact audio summary), plus detailed/simple physical naming styles.
+- Thumbnail fallback based on user setting: custom image, TMDB image, source image, yt-dlp-generated source thumbnail, and/or screenshot fallback. Optional MKV cover embedding uses `mkvpropedit` when available and FFmpeg as a fallback.
 
-Audio selection is a preference, not a guarantee: only formats that expose language metadata can be selected, and yt-dlp may fall back when a preferred language-specific format is unavailable. Subtitle availability also depends on extractor metadata. The bot only downloads subtitles for a language selected in the UI.
+## Diagnosing analysis failures
+
+When link analysis fails, the task message now includes a sanitized yt-dlp diagnostic. Generic errors and HTTP 403 responses are not automatically called DRM. The detail can help identify an unsupported URL/extractor, an authentication or cookie requirement, region restriction, item-not-found response, or a network/provider problem. Full request URLs are redacted because they may contain temporary signatures or tokens. If a link still fails, share the task's displayed extractor detail (not your cookies, credentials, or the full signed URL) when asking for help.
+
+## Limitations and verification status
+
+This is still an integration starter, not a guarantee that every link is supported. Hotstar and SonyLIV extraction depends on the installed yt-dlp extractors and the account's authorized access. SonyLIV has not been independently validated end-to-end in a live run. This bot does not bypass DRM, paywalls, or access controls.
+
+TMDB requires an optional API key; without it, source/extractor metadata remains available. FFprobe/FFmpeg are recommended system dependencies; MediaInfo and mkvpropedit are optional enhancements. If probing tools are missing, the pipeline attempts to continue with incomplete metadata. Thumbnail downloads can fail and should not block upload.
+
+Phase 3 remains deferred: Gofile, Storage.to and Buzzheavier upload providers, cloud fallback, and owner-only operational diagnostics are not wired into this version. Durable resume is also not implemented. The queue is process-local, so do not run multiple bot instances against the same database/session and expect a shared queue.
 
 ## Requirements
 
 - Python 3.10 or newer (Python 3.11 recommended)
-- Telegram Bot API token from BotFather
-- Telegram `API_ID` and `API_HASH` from https://my.telegram.org
-- `ffmpeg` installed if yt-dlp needs to merge separate audio/video streams or embed subtitles
-- Optional MongoDB Atlas/local MongoDB; SQLite works without a database server
+- Telegram bot token from BotFather
+- `API_ID` and `API_HASH` from https://my.telegram.org
+- `ffmpeg`/`ffprobe` for merge/probing, screenshots and thumbnail resizing (recommended)
+- `mkvpropedit` for fast MKV attachment edits (optional)
+- `mediainfo` for supplementary technical metadata (optional)
+- Optional MongoDB Atlas/local MongoDB; SQLite is sufficient for a single instance
 
-## Install and run locally
+## Install and run
 
-1. Extract the ZIP and open a terminal in `hs2_telegram_bot/`.
-2. Create a virtual environment:
+1. Extract the ZIP and open a terminal in the `hs2_telegram_bot/` directory.
+2. Create and activate an isolated environment:
 
    ```bash
    python -m venv .venv
+   source .venv/bin/activate       # Linux/macOS/Cloud Shell
+   # .venv\\Scripts\\activate    # Windows PowerShell
    ```
 
-   Activate it (`.venv\\Scripts\\activate` on Windows, or `source .venv/bin/activate` on macOS/Linux).
-3. Install dependencies:
+3. Install dependencies **after activating** the environment:
 
    ```bash
    python -m pip install -r requirements.txt
    ```
-4. Copy `.env.example` to `.env` and enter `API_ID`, `API_HASH`, and `BOT_TOKEN`.
-5. Optional: set `MONGO_URI` for MongoDB. If omitted, state is written to `data/bot.sqlite3`.
-6. Optional: set `DESTINATION_CHAT_ID` to send finished videos to a channel/group instead of the requesting user's private chat. The bot must have permission to post there.
-7. Run:
+
+4. Create your environment file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Fill in `API_ID`, `API_HASH` and `BOT_TOKEN`. Optional TMDB, MongoDB, server-default cookie and custom-thumbnail settings are documented in `.env.example`. Personal cookie files can be uploaded through the bot settings.
+
+5. Start the bot:
 
    ```bash
    python main.py
    ```
 
-The bot creates `data/` and `work/` as needed. Do not commit `.env`, cookies, Telegram session files, or generated media.
-
-## Optional cookies
-
-If a provider requires an authenticated session and you are allowed to access the media, set `COOKIE_FILE` to a cookies.txt file on the bot host. Do not send that file to the Telegram bot or commit it. Keep the cookie file private and rotate the session if it is exposed. Cookies do not make DRM-protected media downloadable.
+The bot writes its SQLite file under `data/` and task workspaces under `work/`. Keep `.env`, cookies, Telegram session files, and downloaded media out of source control.
 
 ## Configuration
 
@@ -70,34 +96,40 @@ If a provider requires an authenticated session and you are allowed to access th
 |---|---|---|
 | `API_ID`, `API_HASH`, `BOT_TOKEN` | Telegram credentials | Required |
 | `MONGO_URI` | Enable MongoDB persistence | Empty (SQLite) |
-| `MONGO_DATABASE` | Mongo database name | `hs2_telegram_bot` |
+| `MONGO_DATABASE` | MongoDB database name | `hs2_telegram_bot` |
 | `SQLITE_PATH` | SQLite state file | `data/bot.sqlite3` |
-| `DESTINATION_CHAT_ID` | Optional upload destination | User's private chat |
-| `ALLOWED_USER_IDS` | Optional comma-separated Telegram user ID allowlist; blank means public access | Empty |
-| `COOKIE_FILE` | Optional local yt-dlp cookies | Empty |
+| `DESTINATION_CHAT_ID` | Optional Telegram upload destination | Requester's private chat |
+| `ALLOWED_USER_IDS` | Comma-separated Telegram user IDs | Empty (public to users who can message it) |
+| `COOKIE_FILE` | Optional server-side default yt-dlp cookies file; used when a user has not uploaded their own | Empty |
 | `WORK_DIR` | Task workspace root | `work` |
-| `MAX_WORKERS` | Concurrent worker count, clamped to 1–8 | `2` |
-| `MAX_ACTIVE_TASKS_PER_USER` | User task limit | `1` |
-| `MAX_UPLOAD_SIZE_GB` | Reject files larger than this before Telegram upload | `1.9` |
-| `KEEP_FAILED_FILES` | Retain failed/cancelled task files | `true` |
-| `HOTSTAR_DOMAINS` | Comma-separated Hotstar domains | `hotstar.com,jiohotstar.com` |
-| `SONYLIV_DOMAINS` | Comma-separated SonyLIV domains | `sonyliv.com,sonyliv.in` |
+| `MAX_DOWNLOAD_WORKERS` | Concurrent download/media-processing stages, 1–8 | `MAX_WORKERS` or `2` |
+| `MAX_UPLOAD_WORKERS` | Concurrent Telegram uploads, 1–8 | `1` |
+| `MAX_WORKERS` | Backwards-compatible default for download workers | `2` |
+| `MAX_ACTIVE_TASKS_PER_USER` | Active task limit per user | `1` |
+| `MAX_UPLOAD_SIZE_GB` | Maximum final upload size | `1.9` |
+| `KEEP_FAILED_FILES` | Retain failed/cancelled output workspaces | `true` |
+| `HOTSTAR_DOMAINS`, `SONYLIV_DOMAINS` | Source host allowlists | Documented in `.env.example` |
+| `TMDB_API_KEY` | Optional title/year/genre/episode metadata and poster lookup | Empty |
+| `CUSTOM_THUMBNAIL_URL` | Optional global fallback custom poster URL | Empty |
+| `RIPPER_TAG` | Suffix added to detailed filenames | `HS2` |
+| `SOURCE_LABEL` | Source quality tag in filenames | `WEB-DL` |
+| `LOG_LEVEL` | Python logging level | `INFO` |
 
-Do not use wildcard domain strings. The validator accepts each configured hostname and its proper subdomains. If the bot is not intended for public use, set `ALLOWED_USER_IDS` before deploying it.
+If the bot is not intended for public use, set `ALLOWED_USER_IDS` before deploying. Under `/settings` → `Cookies / Session`, press **Upload / Replace cookies.txt**, then send a `.txt` document exported in Netscape cookies format within 10 minutes. Files are limited to 2 MB, validated, and filtered so only cookie rows for configured Hotstar/SonyLIV domains are retained. Each Telegram user gets a separate file under `data/cookies/`; database records do not contain cookie values. Files use owner-only POSIX permissions when supported. Removing a user's uploaded file falls back to the optional server-default `COOKIE_FILE`. Keep the bot host private and protected: the host administrator can still access local files, and uploading the document passes it through Telegram. After the bot confirms saving, delete the original document message from the chat as an additional precaution. Only upload sessions you are authorized to use; cookies do not bypass DRM, subscriptions, or access controls.
 
 ## Deployment notes
 
-- Use a worker/service process, not a short-lived web dyno. `Procfile` is included for process types that support the Heroku-style worker syntax; verify current limits and persistent-storage behavior on your target host.
-- A Heroku-style ephemeral filesystem can be wiped during restart/deploy. Use MongoDB for durable state and understand that interrupted media downloads are marked failed and must be submitted again.
-- Do not run multiple bot instances using the same Pyrogram session name on a shared filesystem. For more than one worker dyno, move the queue to a distributed queue/lease model before scaling; this starter queue is process-local.
-- Keep the Telegram token, Mongo URI, and any cookies in environment secrets.
+- Run as a long-lived worker/service process. A local Telegram Bot API server is not required.
+- Cloud hosts with ephemeral filesystems may lose SQLite/work files after restart; use MongoDB for durable database state but note that active downloads still need to be resubmitted after interruption.
+- The queue is process-local. For multi-instance deployment, add a distributed queue/lease model before scaling horizontally.
+- Do not commit secrets, tokens, database URLs, or cookies. The `data/` folder is ignored by Git; maintain persistent private storage if uploaded cookies should survive host restarts.
 
 ## Tests
 
-Run the local unit tests with:
+Run:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-These tests validate URL host allowlisting and the local persistence adapter. They do not prove that external Hotstar/SonyLIV endpoints work; that requires live, authorized integration tests with your own account and current yt-dlp version.
+The test suite covers strict source URL validation, per-user cookie filtering/storage/isolation and analysis selection, SQLite settings/task persistence, interruption marking, media probing normalization, bitrate units, unknown language handling, Smart Caption V1/V2, safe filenames, and preservation of original-versus-physical filenames. These are unit tests; they do not replace a live authorized Hotstar/SonyLIV extraction test, a TMDB API test, or a Telegram upload test.

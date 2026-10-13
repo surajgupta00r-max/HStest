@@ -23,6 +23,15 @@ def _optional_chat_id(value: str) -> int | str | None:
         return value
 
 
+def _int_env(name: str, default: int, minimum: int, maximum: int | None = None) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer.") from exc
+    value = max(minimum, value)
+    return min(maximum, value) if maximum is not None else value
+
+
 @dataclass(frozen=True)
 class Config:
     api_id: int
@@ -42,6 +51,12 @@ class Config:
     hotstar_domains: tuple[str, ...]
     sonyliv_domains: tuple[str, ...]
     allowed_user_ids: tuple[int, ...]
+    max_download_workers: int = 2
+    max_upload_workers: int = 1
+    tmdb_api_key: str = ""
+    custom_thumbnail_url: str = ""
+    ripper_tag: str = "HS2"
+    source_label: str = "WEB-DL"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -70,11 +85,15 @@ class Config:
         if cookie_file and not cookie_file.is_file():
             raise RuntimeError(f"COOKIE_FILE is configured but does not exist: {cookie_file}")
 
-        max_workers = max(1, min(8, int(os.getenv("MAX_WORKERS", "2"))))
-        max_active = max(1, int(os.getenv("MAX_ACTIVE_TASKS_PER_USER", "1")))
-        upload_gb = max(0.1, float(os.getenv("MAX_UPLOAD_SIZE_GB", "1.9")))
+        max_workers = _int_env("MAX_WORKERS", 2, 1, 8)
+        max_download_workers = _int_env("MAX_DOWNLOAD_WORKERS", max_workers, 1, 8)
+        max_upload_workers = _int_env("MAX_UPLOAD_WORKERS", 1, 1, 8)
+        max_active = _int_env("MAX_ACTIVE_TASKS_PER_USER", 1, 1, 100)
+        try:
+            upload_gb = max(0.1, float(os.getenv("MAX_UPLOAD_SIZE_GB", "1.9")))
+        except ValueError as exc:
+            raise RuntimeError("MAX_UPLOAD_SIZE_GB must be a positive number.") from exc
         bool_text = os.getenv("KEEP_FAILED_FILES", "true").strip().lower()
-
         sqlite_path = Path(os.getenv("SQLITE_PATH", "data/bot.sqlite3")).expanduser()
         work_dir = Path(os.getenv("WORK_DIR", "work")).expanduser()
         return cls(
@@ -95,4 +114,10 @@ class Config:
             hotstar_domains=_csv("HOTSTAR_DOMAINS", "hotstar.com,jiohotstar.com"),
             sonyliv_domains=_csv("SONYLIV_DOMAINS", "sonyliv.com,sonyliv.in"),
             allowed_user_ids=tuple(allowed_ids),
+            max_download_workers=max_download_workers,
+            max_upload_workers=max_upload_workers,
+            tmdb_api_key=os.getenv("TMDB_API_KEY", "").strip(),
+            custom_thumbnail_url=os.getenv("CUSTOM_THUMBNAIL_URL", "").strip(),
+            ripper_tag=os.getenv("RIPPER_TAG", "HS2").strip()[:40],
+            source_label=os.getenv("SOURCE_LABEL", "WEB-DL").strip()[:40] or "WEB-DL",
         )
